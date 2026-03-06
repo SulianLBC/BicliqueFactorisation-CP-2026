@@ -108,7 +108,6 @@ public class Flatzinc extends RegParser {
                 .set("adhocReification", true)
                 .setWarnUser(false)
         ;
-                .setWarnUser(false);
         Settings.PARAM_BICLIQUE_FACTORISATION_ALLDIFFERENT = Boolean.getBoolean("bcfa");
         Settings.PARAM_BICLIQUE_FACTORISATION_CUMULATIVE = Boolean.getBoolean("bcfc");
         Settings.PARAM_BICLIQUE_FACTORISATION = Settings.PARAM_BICLIQUE_FACTORISATION_ALLDIFFERENT || Settings.PARAM_BICLIQUE_FACTORISATION_CUMULATIVE;

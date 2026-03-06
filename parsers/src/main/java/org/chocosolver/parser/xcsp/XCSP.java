@@ -13,6 +13,7 @@ import org.chocosolver.parser.Level;
 import org.chocosolver.parser.RegParser;
 import org.chocosolver.solver.Model;
 import org.chocosolver.solver.ResolutionPolicy;
+import org.chocosolver.solver.Settings;
 import org.chocosolver.solver.Solver;
 import org.chocosolver.solver.search.restart.InnerOuterCutoff;
 import org.chocosolver.solver.search.restart.Restarter;
