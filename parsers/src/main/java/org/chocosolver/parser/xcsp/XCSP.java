@@ -69,6 +69,22 @@ public class XCSP extends RegParser {
     }
 
     @Override
+    public void createSettings() {
+        defaultSettings = Settings.prod()
+                .setMinCardinalityForSumDecomposition(256)
+                .setLCG(lcg)
+                .setMaxDomSizeForEnumerated(6500)
+                .setNbMaxLearntClauses(20_000)
+                .setWarnUser(false);
+        Settings.PARAM_BICLIQUE_FACTORISATION_ALLDIFFERENT = Boolean.getBoolean("bcfa");
+        Settings.PARAM_BICLIQUE_FACTORISATION_CUMULATIVE = Boolean.getBoolean("bcfc");
+        Settings.PARAM_BICLIQUE_FACTORISATION = Settings.PARAM_BICLIQUE_FACTORISATION_ALLDIFFERENT || Settings.PARAM_BICLIQUE_FACTORISATION_CUMULATIVE;
+        Settings.PARAM_CLAUSE_MINIMISATION = Integer.getInteger("ccmin", 0);
+        Settings.PARAM_REDUCE_SAT_LEARNTS_CLAUSE_BASE = Integer.getInteger("lcbase", 20000);;
+        Settings.PARAM_REDUCE_SAT_LEARNTS_CLAUSE_FACTOR = Integer.getInteger("lcfactor", 5000);
+    }
+
+    @Override
     public void createSolver() {
         super.createSolver();
         if (level.isLoggable(Level.COMPET)) {
