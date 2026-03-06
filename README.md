@@ -26,6 +26,6 @@ JARGS="-server -Xmx8g -Xss128m"
 PARAMS="-lcg -lvl JSON"
 # FlatZinc instance file, replace with your own file path
 FILE="parsers/src/test/resources/flatzinc/alpha/alpha.fzn"
-export fname=$(basename "$FILE")
+fname=$(basename "$FILE")
 java ${JARGS} -Dbcfa=true -Dbcfc=true $JAR $FILE $PARAMS > "./"${fname}.json 2> "./"${fname}.err
 ```
