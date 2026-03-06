@@ -628,7 +628,7 @@ public abstract class Reason {
             int idx = reason.index;
             int size = getVal(idx);
             int ci = ensureCapacity(size + 2);
-//            setVal(ci, size + 1);
+            setVal(ci, size + 1);
 //            for (int i = 0; i < size; i++) {
 //                setVal(ci + 1 + i, getVal(idx + 1 + i));
 //            }
