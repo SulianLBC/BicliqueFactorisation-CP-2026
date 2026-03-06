@@ -15,6 +15,7 @@ import gnu.trove.map.hash.TIntObjectHashMap;
 import org.chocosolver.memory.IStateBitSet;
 import org.chocosolver.sat.MiniSat;
 import org.chocosolver.sat.Reason;
+import org.chocosolver.solver.Settings;
 import org.chocosolver.solver.constraints.Explained;
 import org.chocosolver.solver.constraints.Propagator;
 import org.chocosolver.solver.constraints.PropagatorPriority;
@@ -51,6 +52,9 @@ import static org.chocosolver.solver.constraints.nary.cumulative.SchedulingUtils
  */
 @Explained
 public class PropagatorCumulative extends Propagator<IntVar> {
+    private static final int KEY = 0;
+    private static final int FACTOR = 1;
+
     private static int getFreeDuration(final Task task) {
         final int pTT = Math.max(0, task.getEct() - task.getLst());
         return task.getDuration().getLB() - pTT;
@@ -104,7 +108,11 @@ public class PropagatorCumulative extends Propagator<IntVar> {
     private final int[] tsks;
     // For explanations
     private final TIntArrayList literals;
-    
+    private final MiniSat sat;
+    private final boolean bicliqueFactorisation;
+    private final TIntObjectHashMap<int[]> factors; // indicating for each value if factor has been created in this call
+    private int updateKey; // This key is incremented at each call, to reset the upToDateFactor information
+
     public PropagatorCumulative(final Task[] tasks, final IntVar[] heights, final IntVar capacity) {
         this(tasks, heights, capacity, false, false);
     }
@@ -146,7 +154,18 @@ public class PropagatorCumulative extends Propagator<IntVar> {
             }
             mapTaskToHeight.put(tasks[i], heights[i]);
         }
-        literals = new TIntArrayList(4 * tasks.length + 3);
+        // Specific data structures for generating the explanations
+        if (model.getSolver().isLCG()) {
+            literals = new TIntArrayList(4 * tasks.length + 3);
+            this.sat = model.getSolver().getSat();
+            this.factors = new TIntObjectHashMap<>();
+            this.updateKey = 0;
+        } else {
+            this.sat = null;
+            this.literals = null;
+            this.factors = null;
+        }
+        this.bicliqueFactorisation = Settings.PARAM_BICLIQUE_FACTORISATION_CUMULATIVE;
     }
 
     @Override
@@ -291,6 +310,7 @@ public class PropagatorCumulative extends Propagator<IntVar> {
      */
     private void buildProfile() throws ContradictionException {
         profile.buildProfile(tasks, heights, activeTasks);
+        updateKey++;
         int idxRectMaxHeight = 0;
         for (int j = 0; j < profile.size(); j++) {
             if (profile.getHeightRectangle(idxRectMaxHeight) < profile.getHeightRectangle(j)) {
@@ -371,6 +391,24 @@ public class PropagatorCumulative extends Propagator<IntVar> {
             final int begin,
             final int end
     ) {
+        // Create the corresponding factor
+        if (bicliqueFactorisation) {
+            if (!factorExists(begin)) {
+                BitSet indexesTask = profile.fillList(j);
+                int factor = sat.newTemporaryVariable();
+                int[] r = new int[indexesTask.cardinality() * 4 + 1];
+                int m = 1;
+                for (int i = indexesTask.nextSetBit(0); i >= 0; i = indexesTask.nextSetBit(i + 1)) {
+                    r[m++] = getNegGeqLit(tasks[i].getEnd(), end);
+                    r[m++] = getNegLeqLit(tasks[i].getStart(), begin);
+                    r[m++] = tasks[i].getDuration().getMinLit();
+                    r[m++] = heights[i].getMinLit();
+                }
+                sat.cEnqueue(factor, Reason.r(r));
+                storeFactor(begin, factor);
+            }
+            literals.add(MiniSat.neg(getFactor(begin)));
+        } else {
             BitSet indexesTask = profile.fillList(j);
             for (int i = indexesTask.nextSetBit(0); i >= 0; i = indexesTask.nextSetBit(i + 1)) {
                 literals.add(getNegGeqLit(tasks[i].getEnd(), end));
@@ -378,6 +416,25 @@ public class PropagatorCumulative extends Propagator<IntVar> {
                 literals.add(tasks[i].getDuration().getMinLit());
                 literals.add(heights[i].getMinLit());
             }
+        }
+    }
+
+    private boolean factorExists(int timepoint) {
+        return factors.contains(timepoint) && factors.get(timepoint)[KEY] == updateKey;
+    }
+
+    private int getFactor(int timepoint) {
+        return factors.get(timepoint)[FACTOR];
+    }
+
+    private void storeFactor(int timepoint, int factor) {
+        int[] values = factors.get(timepoint);
+        if (values == null) {
+            values = new int[2];
+            factors.put(timepoint, values);
+        }
+        values[KEY] = updateKey;
+        values[FACTOR] = factor;
     }
 
     /**
