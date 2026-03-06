@@ -9,10 +9,12 @@
  */
 package org.chocosolver.solver.constraints.nary.alldifferent.algo;
 
+import gnu.trove.list.array.TIntArrayList;
 import org.chocosolver.memory.IEnvironment;
 import org.chocosolver.sat.MiniSat;
 import org.chocosolver.sat.Reason;
 import org.chocosolver.solver.Model;
+import org.chocosolver.solver.Settings;
 import org.chocosolver.solver.constraints.Propagator;
 import org.chocosolver.solver.constraints.nary.alldifferent.AllDifferent;
 import org.chocosolver.solver.exception.ContradictionException;
@@ -45,12 +47,11 @@ public class AlgoAllDiffBimodal implements IAlldifferentAlgorithm {
 
     Propagator<IntVar> aCause;
     Model model;
+    final MiniSat sat;
     protected IntVar[] vars;
-    private final int R;    // Total number of variables
     private final TrackingList variablesDynamic;  // The dynamic list of uninstantiated variables
     private final int minValue;
     private final int maxValue;
-    private final int D;    // Total number of values
     private final TrackingList valuesDynamic;  // The dynamic list of values present in the domain of at least one variable and not matched to an instantiated variable
     private final int fail; // Symbol signifying we couldn't find an augmenting path
     private final BipartiteMatching matching; // The matching used dynamically
@@ -79,8 +80,13 @@ public class AlgoAllDiffBimodal implements IAlldifferentAlgorithm {
     private final int[] upToDateSCC; // indicating for each value if its SCC has been updated in this call
     private int updateKey; // This key is incremented at each call, to reset the upToDate information
 
+    private final int[] sccFactors; // Factor of each SCC, if already created, for generating explanations
+    private final int[] upToDateFactor; // indicating for each SCC if its factor has been created in this call
+
     private final boolean allEnum;
 
+    private final boolean bicliqueFactorisation;
+    private final TIntArrayList explanation = new TIntArrayList();
     //***********************************************************************************
     // CONSTRUCTORS
     //***********************************************************************************
@@ -90,8 +96,9 @@ public class AlgoAllDiffBimodal implements IAlldifferentAlgorithm {
         this.aCause = cause;
         this.model = variables[0].getModel();
         this.vars = variables;
-        this.R = variables.length;
-        this.variablesDynamic = new TrackingList(0, R-1);
+        // Total number of variables
+        int r = variables.length;
+        this.variablesDynamic = new TrackingList(0, r -1);
         int tempMinValue = vars[0].getLB();
         int tempMaxValue = vars[0].getUB();
         for (IntVar x : vars) {
@@ -100,17 +107,18 @@ public class AlgoAllDiffBimodal implements IAlldifferentAlgorithm {
         }
         this.minValue = tempMinValue;
         this.maxValue = tempMaxValue;
-        this.D = maxValue - minValue + 1;
+        // Total number of values
+        int d = maxValue - minValue + 1;
         this.valuesDynamic = new TrackingList(minValue, maxValue);
         refineUniverse(valuesDynamic);
         this.fail = minValue - 1;
-        this.matching = new BipartiteMatching(0, R-1, minValue, maxValue);
+        this.matching = new BipartiteMatching(0, r -1, minValue, maxValue);
 
         this.mode = acMode;
 
         // Specific data structures for finding the maximum matching
-        this.parentBFS = new int[D];
-        this.queueBFS = new int[R];
+        this.parentBFS = new int[d];
+        this.queueBFS = new int[r];
         this.headBFS = 0;
         this.tailBFS = 0;
 
@@ -118,20 +126,30 @@ public class AlgoAllDiffBimodal implements IAlldifferentAlgorithm {
         this.t_node = minValue - 1;
         this.complementSCC = new TrackingList(minValue, maxValue);
         refineUniverse(complementSCC);
-        this.tarjanStack = new int[D];
+        this.tarjanStack = new int[d];
         this.topTarjan = 0;
-        this.inStack = new boolean[D];
-        this.pre = new int[D];
-        this.low = new int[D];
+        this.inStack = new boolean[d];
+        this.pre = new int[d];
+        this.low = new int[d];
 
         // Specific data structures for generating the explanations
-        this.sccPartition = new int[D];
-        this.sccIndices = new int[D];
+        if(model.getSolver().isLCG()){
+            this.sat = model.getSolver().getSat();
+        }else{
+            this.sat = null;
+        }
+        this.sccPartition = new int[d];
+        this.sccIndices = new int[d]; //TODO: bounded by R + 1 ?
         this.numberOfSCCs = 0;
-        this.sccBelonging = new int[D];
-        this.upToDateSCC = new int[D];
+        this.sccBelonging = new int[d];
+        this.upToDateSCC = new int[d];
         this.updateKey = 0;
 
+        // Specific data structures for factorising the explanations
+        this.sccFactors = new int[d];
+        this.upToDateFactor = new int[d];
+
+        // Specific data structures for dealing with variables defined by their bounds
         boolean temp = true;
         for (IntVar x : vars) {
             if (!x.hasEnumeratedDomain()) {
@@ -140,6 +158,7 @@ public class AlgoAllDiffBimodal implements IAlldifferentAlgorithm {
             }
         }
         this.allEnum = temp;
+        this.bicliqueFactorisation = Settings.PARAM_BICLIQUE_FACTORISATION_ALLDIFFERENT;
     }
 
     private void refineUniverse(TrackingList valueUniverse) { // The tracking list initially contains an interval, so we refine it by removing the values that are present in no variables' domain (which may contain holes)
@@ -251,9 +270,8 @@ public class AlgoAllDiffBimodal implements IAlldifferentAlgorithm {
     public void generateFailureExplanation() throws ContradictionException {
         Reason reason = Reason.undef();
         if (aCause.lcg()) {
-            int nVars = tailBFS;
             int nVals = tailBFS - 1;
-            int[] explanation = new int[1 + nVars * (2 + (maxValSearchedNodes - minValSearchedNodes + 1) - nVals)];
+            explanation.resetQuick();
             // Store the values between minValSearchedNodes and maxValSearchedNodes that does not belong to the searched nodes
             int[] nonValues = new int[(maxValSearchedNodes - minValSearchedNodes + 1) - nVals];
             int m = 0;
@@ -264,16 +282,15 @@ public class AlgoAllDiffBimodal implements IAlldifferentAlgorithm {
             }
             assert m == nonValues.length;
             // Start generating the explanation
-            m = 1;
+            explanation.add(0);
             for (int i = 0; i < tailBFS; i++) {
                 int var = queueBFS[i];
-                explanation[m++] = MiniSat.neg(vars[var].getLit(minValSearchedNodes, LR_GE));
+                explanation.add(MiniSat.neg(vars[var].getLit(minValSearchedNodes, LR_GE)));
                 for (int value : nonValues) {
-                    explanation[m++] = MiniSat.neg(vars[var].getLit(value, LR_NE));
+                    explanation.add(MiniSat.neg(vars[var].getLit(value, LR_NE)));
                 }
-                explanation[m++] = MiniSat.neg(vars[var].getLit(maxValSearchedNodes, LR_LE));
+                explanation.add(MiniSat.neg(vars[var].getLit(maxValSearchedNodes, LR_LE)));
             }
-            assert m == explanation.length;
             reason = Reason.r(explanation);
         }
         valuesDynamic.refill(); // valuesDynamic is a backtrackable TrackingList, we must refill it to avoid breaking its structure when backtracking
@@ -282,7 +299,7 @@ public class AlgoAllDiffBimodal implements IAlldifferentAlgorithm {
 
     private boolean isInSearchedNodes(int val) {
         // At this point of the filtering procedure, valuesDynamic is the list of unvisited values in the reduced variable-value graph and complementSCC is the list of values in the reduced variable-value graph
-        // So test whether a value has been visited we must verify that it does not belong to valuesDynamic AND it does belong to complementSCC
+        // So to check whether a value has been visited we must verify that it does not belong to valuesDynamic AND it does belong to complementSCC
         return !valuesDynamic.isPresent(val) && complementSCC.isPresent(val);
     }
 
@@ -501,10 +518,12 @@ public class AlgoAllDiffBimodal implements IAlldifferentAlgorithm {
             int minValSCC = maxValue;
             int maxValSCC = minValue;
             int scc = getSCC(destinationVal);
-            if (getSizeScc(scc) == 1) { // Got a specific way to generate the explanation in the case of forced instantiation
+            if (getSizeScc(scc) == 1) { // Got a specific way to generate the explanation in case of forced instantiation
                 int matchedVar = matching.getMatchV(destinationVal);
                 assert vars[matchedVar].isInstantiatedTo(destinationVal);
                 reason = Reason.r(vars[matchedVar].getValLit());
+            } else if (bicliqueFactorisation && factorExists(scc)) { // Check whether the explanation related to the destination SCC has already been computed
+                reason = Reason.r(MiniSat.neg(sccFactors[scc]));
             } else {
                 // Get the minimum and maximum values of the destination SCC
                 for (int i = getStartPositionSCC(scc); i < getEndPositionSCC(scc); i++) {
@@ -513,8 +532,7 @@ public class AlgoAllDiffBimodal implements IAlldifferentAlgorithm {
                 }
 
                 // Create the array of the explanation with the right size
-                int[] explanation = new int[1 + getSizeScc(scc) * (2 + (maxValSCC - minValSCC + 1) - getSizeScc(scc))];
-
+                explanation.resetQuick();
                 // Store the values between minValSCC and maxValSCC that does not belong to the SCC
                 int[] nonValues = new int[(maxValSCC - minValSCC + 1) - getSizeScc(scc)];
                 int m = 0;
@@ -524,19 +542,26 @@ public class AlgoAllDiffBimodal implements IAlldifferentAlgorithm {
                     }
                 }
                 assert m == nonValues.length;
-                // Start generating the explanation
-                m = 1;
+                explanation.add(0);
+                // Start computing the explanation
                 for (int i = getStartPositionSCC(scc); i < getEndPositionSCC(scc); i++) {
                     int var = matching.getMatchV(sccPartition[i]);
-                    explanation[m++] = MiniSat.neg(vars[var].getLit(minValSCC, LR_GE));
+                    explanation.add(MiniSat.neg(vars[var].getLit(minValSCC, LR_GE)));
                     for (int value : nonValues) {
-                        explanation[m++] = MiniSat.neg(vars[var].getLit(value, LR_NE));
+                        explanation.add(MiniSat.neg(vars[var].getLit(value, LR_NE)));
                     }
-                    explanation[m++] = MiniSat.neg(vars[var].getLit(maxValSCC, LR_LE));
+                    explanation.add(MiniSat.neg(vars[var].getLit(maxValSCC, LR_LE)));
                 }
-                assert m == explanation.length;
-                reason = Reason.r(explanation);
-
+                // Create the corresponding factor
+                if (bicliqueFactorisation) {
+                    int factor = sat.newTemporaryVariable();
+                    sat.cEnqueue(factor, Reason.r(explanation));
+                    sccFactors[scc] = factor;
+                    upToDateFactor[scc] = updateKey;
+                    reason = Reason.r(MiniSat.neg(factor));
+                } else {
+                    reason = Reason.r(explanation);
+                }
             }
         }
         vars[sourceVar].removeValue(destinationVal, aCause, reason);
@@ -756,4 +781,6 @@ public class AlgoAllDiffBimodal implements IAlldifferentAlgorithm {
     }
 
     private int getSizeScc(int scc) {return getEndPositionSCC(scc) - getStartPositionSCC(scc);}
+
+    private boolean factorExists(int scc) {return upToDateFactor[scc] == updateKey; }
 }
