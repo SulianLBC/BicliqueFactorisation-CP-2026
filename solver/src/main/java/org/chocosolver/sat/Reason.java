@@ -54,7 +54,6 @@ public abstract class Reason {
      * @param environment
      */
     public static void makeManager(IEnvironment environment) {
-        System.out.println("%% VERSION="+ VERSION);
         switch (VERSION) {
             case 1:
                 Reason.manager = new ReasonManager(environment);
