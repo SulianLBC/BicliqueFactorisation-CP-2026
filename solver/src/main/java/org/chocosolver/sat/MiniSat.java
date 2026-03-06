@@ -17,10 +17,7 @@ import gnu.trove.stack.array.TIntArrayStack;
 import org.chocosolver.solver.Settings;
 import org.chocosolver.solver.variables.impl.LitVar;
 
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.BitSet;
-import java.util.Comparator;
+import java.util.*;
 
 /**
  * <p>A MiniSat solver.</p>
@@ -95,6 +92,7 @@ public class MiniSat implements SatFactory {
     public static final int lTrue = 0b01;
     public static final int lFalse = 0b10;
     public static final int lUndef = 0b11;
+    public static final int TMP_VAR_TYPE = 2;
     // undefined clause
     protected static ThreadLocal<Integer> clauseCounter = ThreadLocal.withInitial(() -> 0);
     private final Comparator<Clause> comp = Comparator.<Clause>comparingInt(c -> -c.getLBD())
@@ -209,6 +207,22 @@ public class MiniSat implements SatFactory {
         vardata.add(VD_Undef);
         cinfo.add(ci);
         return v;
+    }
+
+    /**
+     * Reuse or create a temporary variable.
+     * A temporary variable is released upon backtrack.
+     *
+     * @return a variable
+     */
+    public int newTemporaryVariable() {
+        int var;
+        if (temporary_variables.size() > 0) {
+            var = temporary_variables.pop();
+        } else {
+            var = newVariable(new MiniSat.ChannelInfo(null, TMP_VAR_TYPE, -1, -1, false));
+        }
+        return MiniSat.makeLiteral(var, true);
     }
 
 
@@ -389,6 +403,10 @@ public class MiniSat implements SatFactory {
                         System.out.printf("Unfix %s\n", printLit(trail_.get(c)));
                     else
                         System.out.printf("Unfix %d\n", trail_.get(c));
+                    if (cinfo.get(x).cons_type == TMP_VAR_TYPE) {
+                        // recycle
+                        temporary_variables.push(x);
+                    }
                 }
             }
             qhead_ = trail_markers_.get(level);
@@ -749,7 +767,12 @@ public class MiniSat implements SatFactory {
             confl = getConfl(p);
             vardata.get(var(p)).mark--;
             if (DEBUG > 1) System.out.printf("clear %d l:%d\n", var(p), p);
-            pathC--;
+            // Ignore the type of the literal when the biclique factorisation is inactive
+            if (!Settings.PARAM_BICLIQUE_FACTORISATION
+                    || cinfo.get(var(p)).cons_type != TMP_VAR_TYPE) {
+                pathC--;
+            }
+            assert pathC >= 0 : "Something goes wrong with the UIP";
             if (DEBUG > 1) System.out.printf("path-- (%d)\n", pathC);
         } while (pathC > 0 || !cinfo.get(var(p)).reliable);
         out_learnt.set(0, neg(p));
@@ -766,6 +789,12 @@ public class MiniSat implements SatFactory {
         }
         if (c.learnt())
             claBumpActivity(c);
+        // Check the type of the literal only if the biclique factorisation is active
+        if (Settings.PARAM_BICLIQUE_FACTORISATION
+                && lit_p != litUndef && cinfo.get(var(lit_p)).cons_type == TMP_VAR_TYPE) {
+            // if this is a factor, then it should have been already expanded
+            return pathC;
+        }
         for (int j = (lit_p == litUndef) ? 0 : 1; j < c.size(); j++) {
             int lit_q = c._g(j);
             int var_q = var(lit_q);
@@ -783,6 +812,21 @@ public class MiniSat implements SatFactory {
         if (vardata.get(var_p).mark != analysisRound) {
             if (DEBUG > 1) System.out.printf("mark %d\n", var_p);
             vardata.get(var_p).mark = analysisRound;
+            // Check the type of the literal only if the biclique factorisation is active
+            if (Settings.PARAM_BICLIQUE_FACTORISATION &&
+                    cinfo.get(var_p).cons_type == TMP_VAR_TYPE) {
+                // we recursively expand the factor to get the real reason
+                Clause c = getConfl(lit_p);
+                for (int j = (lit_p == litUndef) ? 0 : 1; j < c.size(); j++) {
+                    int lit_q = c._g(j);
+                    int var_q = var(lit_q);
+                    if (level(var_q) > rootlvl) {
+                        assert lit_p == litUndef || pos(var(lit_p)) > pos(var_q) : "chronological inconsistency :(" + printLit(lit_q) + " @ " + pos(lit_q) +
+                                ") is explained by an older event (" + printLit(lit_q) + " @ " + pos(var_q) + ") " + c;
+                        pathC = updateNogoodRec(out_learnt, lit_q, pathC);
+                    }
+                }
+            } else {
                 varBumpActivity(var_p);
                 if (level(var_p) >= trailMarker()) {
                     if (DEBUG > 1) System.out.printf("path++ (%d -- %d >= %d)\n", pathC, level(var_p), trailMarker());
@@ -791,6 +835,7 @@ public class MiniSat implements SatFactory {
                     out_learnt.add(lit_p);
                     if (DEBUG > 1) System.out.printf("out %d\n", lit_p);
                 }
+            }
         }
         return pathC;
     }
@@ -808,6 +853,7 @@ public class MiniSat implements SatFactory {
             if (cinfo.get(var(p)).reliable) {
                 continue;
             }
+            assert cinfo.get(var(p)).cons_type != TMP_VAR_TYPE : "no factor is allowed in a nogood";
             if (DEBUG > 0) {
                 System.out.printf("replacing %s in %s\n", p, out_learnt);
             }
@@ -856,6 +902,20 @@ public class MiniSat implements SatFactory {
         for (int k = 1; k < c.size(); k++) {
             int q = c._g(k); // The literal (either negative or positive)
             int v = var(q); // The boolean variable associated with the literal
+            //TODO: replace this test by a "reliable" test ?
+            if (level(v) > rootlvl && cinfo.get(v).cons_type == TMP_VAR_TYPE) { // The literal is a factor so we check its reason instead
+                assert cinfo.get(var(p)).cons_type != TMP_VAR_TYPE : "Two factors are not supposed to be linked by an arc";
+                if (vardata.get(v).mark < analysisRound) { // not marked
+                    if (isIncludedIterativeVersion(q)) {
+                        vardata.get(v).mark = notKeep;
+                    } else {
+                        vardata.get(v).mark = keep;
+                        return false;
+                    }
+                } else if (vardata.get(v).mark == keep) {
+                    return false;
+                }
+            } else
                 if (level(v) > rootlvl && vardata.get(v).mark < analysisRound) { // The literal is neither a factor nor from the initial propagation but is not present in the initial no-good
                 return false;
             }
@@ -875,13 +935,27 @@ public class MiniSat implements SatFactory {
                 int q = c._g(k); // The literal (either negative or positive)
                 int v_q = var(q); // The boolean variable associated with the literal
                 if (level(v_q) <= rootlvl) continue;
-                if (vardata.get(v_q).mark < analysisRound) { // The literal is neither a factor nor from the initial propagation but is not present in the initial no-good
+                if (cinfo.get(v_q).cons_type == TMP_VAR_TYPE) { // The literal is a factor so we check its reason instead
+                    assert cinfo.get(var(p)).cons_type != TMP_VAR_TYPE : "Currently, two factors are not supposed to be linked by an arc";
+                    if (vardata.get(v_q).mark < analysisRound) { // not marked
+                        analyze_stack.add(q);
+                        vardata.get(v_q).parent = v_p;
+                    } else if (vardata.get(v_q).mark == keep) {
                         int cur = v_p;
                         while (cur != var(p_start)) {
                             vardata.get(cur).mark = keep;
                             cur = vardata.get(cur).parent;
                         }
                         return false;
+                    }
+                } else
+                    if (vardata.get(v_q).mark < analysisRound) { // The literal is neither a factor nor from the initial propagation but is not present in the initial no-good
+                    int cur = v_p;
+                    while (cur != var(p_start)) {
+                        vardata.get(cur).mark = keep;
+                        cur = vardata.get(cur).parent;
+                    }
+                    return false;
                 }
             }
             if (p != p_start) {
