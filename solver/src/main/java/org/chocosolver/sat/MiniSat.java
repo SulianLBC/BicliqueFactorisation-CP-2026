@@ -403,10 +403,10 @@ public class MiniSat implements SatFactory {
                         System.out.printf("Unfix %s\n", printLit(trail_.get(c)));
                     else
                         System.out.printf("Unfix %d\n", trail_.get(c));
-                    if (cinfo.get(x).cons_type == TMP_VAR_TYPE) {
-                        // recycle
-                        temporary_variables.push(x);
-                    }
+                }
+                if (cinfo.get(x).cons_type == TMP_VAR_TYPE) {
+                    // recycle
+                    temporary_variables.push(x);
                 }
             }
             qhead_ = trail_markers_.get(level);
