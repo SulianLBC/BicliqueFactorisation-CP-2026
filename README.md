@@ -1,3 +1,10 @@
+# Main modifications
+
+Three classes are modified in the original Choco Solver project to implement the biclique factorisation 
+for the AllDifferent and Cumulative constraints. 
+
+These classes are `MiniSat.java`, `AlgoAllDiffBimodal.java` and `PropagatorCumulative.java`.
+
 # How to Build the Project
 
 1. Clone the repository to your local machine.
