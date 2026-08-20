@@ -28,6 +28,7 @@ public final class ArrayClause extends Clause {
      * Indicate if the clause is learnt or not
      */
     private final boolean learnt;
+    private final boolean attached;
     /**
      * Activity of the clause (related to frequency of conflict)
      */
@@ -50,7 +51,7 @@ public final class ArrayClause extends Clause {
      * @param ps     literals
      * @param learnt indicate if the clause is learnt
      */
-    public ArrayClause(int[] ps, boolean learnt) {
+    public ArrayClause(int[] ps, boolean learnt, boolean attached) {
         //super(0);
         if (ps.length <= 3) { // 3 is the max. size of short_expl_3
             literals_ = ps.clone();
@@ -58,6 +59,7 @@ public final class ArrayClause extends Clause {
             literals_ = ps.clone();//org.chocosolver.sat.ArrayClause.reduceOs(ps);
         }
         this.learnt = learnt;
+        this.attached = attached;
         this.id = clauseCounter.get();
         clauseCounter.set(id + 1);
     }
@@ -91,7 +93,7 @@ public final class ArrayClause extends Clause {
      * @param ps literals
      */
     ArrayClause(int[] ps) {
-        this(ps, false);
+        this(ps, false, false);
     }
 
     /**
@@ -100,10 +102,11 @@ public final class ArrayClause extends Clause {
      * @param ps     literals
      * @param learnt indicate if the clause is learnt
      */
-    public ArrayClause(TIntList ps, boolean learnt) {
+    public ArrayClause(TIntList ps, boolean learnt, boolean attached) {
         //super(0);
         literals_ = ps.toArray();
         this.learnt = learnt;
+        this.attached = attached;
         this.id = clauseCounter.get();
         clauseCounter.set(id + 1);
     }
@@ -114,7 +117,7 @@ public final class ArrayClause extends Clause {
      * @param ps literals
      */
     ArrayClause(TIntList ps) {
-        this(ps, false);
+        this(ps, false, false);
     }
     /**
      * @return the number of literals composing the clause
@@ -148,6 +151,10 @@ public final class ArrayClause extends Clause {
      */
     public boolean learnt() {
         return learnt;
+    }
+
+    public boolean isAttached(){
+        return attached;
     }
 
     /**

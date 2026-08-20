@@ -35,9 +35,13 @@ import java.util.function.*;
  */
 public class Settings {
 
+    public enum LearningMode {
+        EXTENDED_RESOLUTION, BICLIQUE_FACTORISATION, NONE
+    }
+
+    public static LearningMode PARAM_LEARNING_MODE = LearningMode.NONE;
     public static boolean PARAM_BICLIQUE_FACTORISATION_CUMULATIVE = false;
     public static boolean PARAM_BICLIQUE_FACTORISATION_ALLDIFFERENT = false;
-    public static boolean PARAM_BICLIQUE_FACTORISATION = PARAM_BICLIQUE_FACTORISATION_CUMULATIVE || PARAM_BICLIQUE_FACTORISATION_ALLDIFFERENT;
     public static int PARAM_CLAUSE_MINIMISATION = 0;
     public static boolean PARAM_SORT_LITS_ON_FAILURE = false;
     public static int PARAM_REDUCE_SAT_LEARNTS_CLAUSE_BASE = 1_000;

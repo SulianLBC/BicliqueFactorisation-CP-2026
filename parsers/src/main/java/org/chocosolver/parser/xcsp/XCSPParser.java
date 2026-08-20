@@ -771,19 +771,21 @@ public class XCSPParser implements XCallbacks2 {
         model.count(value, vars(list), model.intVar(0, k)).post();
     }
 
+    public static String AC = "AC_TUNED";
+
     @Override
     public void buildCtrAllDifferent(String id, XVariables.XVarInteger[] list) {
-        model.allDifferent(vars(list), "AC").post();
+        model.allDifferent(vars(list), AC).post();
     }
 
     @Override
     public void buildCtrAllDifferentMatrix(String id, XVariables.XVarInteger[][] matrix) {
         for (XVariables.XVarInteger[] list : matrix) {
-            model.allDifferent(vars(list), "AC").post();
+            model.allDifferent(vars(list), AC).post();
         }
         XVariables.XVarInteger[][] tmatrix = ArrayUtils.transpose(matrix);
         for (XVariables.XVarInteger[] list : tmatrix) {
-            model.allDifferent(vars(list), "AC").post();
+            model.allDifferent(vars(list), AC).post();
         }
     }
 

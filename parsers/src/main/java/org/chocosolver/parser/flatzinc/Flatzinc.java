@@ -14,6 +14,7 @@ import org.antlr.v4.runtime.atn.PredictionMode;
 import org.chocosolver.parser.Level;
 import org.chocosolver.parser.RegParser;
 import org.chocosolver.parser.flatzinc.ast.Datas;
+import org.chocosolver.sat.MiniSat;
 import org.chocosolver.solver.Model;
 import org.chocosolver.solver.ResolutionPolicy;
 import org.chocosolver.solver.Settings;
@@ -52,7 +53,7 @@ import java.util.stream.Stream;
  */
 public class Flatzinc extends RegParser {
 
-    public enum CompleteSearch{
+    public enum CompleteSearch {
         /**
          * No complementary search (might be incorrect though)
          */
@@ -103,17 +104,22 @@ public class Flatzinc extends RegParser {
                 .setMinCardinalityForSumDecomposition(256)
                 .setLCG(lcg)
                 .setMaxDomSizeForEnumerated(6500)
-                .setNbMaxLearntClauses(20_000)
+                .setNbMaxLearntClauses(50_000)
                 //.setIntVarLazyLitWithWeakBounds(false)
                 .set("adhocReification", true)
-                .setWarnUser(false)
-        ;
-        Settings.PARAM_BICLIQUE_FACTORISATION_ALLDIFFERENT = Boolean.getBoolean("bcfa");
-        Settings.PARAM_BICLIQUE_FACTORISATION_CUMULATIVE = Boolean.getBoolean("bcfc");
-        Settings.PARAM_BICLIQUE_FACTORISATION = Settings.PARAM_BICLIQUE_FACTORISATION_ALLDIFFERENT || Settings.PARAM_BICLIQUE_FACTORISATION_CUMULATIVE;
+                .setWarnUser(false);
+        Settings.PARAM_LEARNING_MODE = Settings.LearningMode.valueOf(System.getProperty("lm"));
+        Settings.PARAM_BICLIQUE_FACTORISATION_ALLDIFFERENT =
+                !Settings.PARAM_LEARNING_MODE.equals(Settings.LearningMode.NONE);
+        Settings.PARAM_BICLIQUE_FACTORISATION_CUMULATIVE =
+                !Settings.PARAM_LEARNING_MODE.equals(Settings.LearningMode.NONE);
+        // TODO exclusive between eres et bcfa
         Settings.PARAM_CLAUSE_MINIMISATION = Integer.getInteger("ccmin", 0);
-        Settings.PARAM_REDUCE_SAT_LEARNTS_CLAUSE_BASE = Integer.getInteger("lcbase", 20000);;
+        Settings.PARAM_REDUCE_SAT_LEARNTS_CLAUSE_BASE = Integer.getInteger("lcbase", 20000);
         Settings.PARAM_REDUCE_SAT_LEARNTS_CLAUSE_FACTOR = Integer.getInteger("lcfactor", 5000);
+        MiniSat.totalArcs = 0;
+        MiniSat.total1UIPFactors = 0;
+        MiniSat.totalFactorsInNG = 0;
     }
 
     @Override
@@ -135,7 +141,7 @@ public class Flatzinc extends RegParser {
     @Override
     public void createSolver() {
         if (level.isLoggable(Level.COMPET)) {
-            System.out.printf("%% Choco-solver%s (5.0.0, 260202_14:43)\n", lcg? " with LCG" : "");
+            System.out.printf("%% Choco-solver%s (5.0.0, 260202_14:43)\n", lcg ? " with LCG" : "");
         }
         super.createSolver();
         datas = new Datas[nb_cores];
@@ -160,7 +166,7 @@ public class Flatzinc extends RegParser {
                 FileInputStream fileInputStream = new FileInputStream(instance);
                 parse(m, datas[i], fileInputStream);
                 fileInputStream.close();
-                if(logFilePath != null) {
+                if (logFilePath != null) {
                     s.log().remove(System.out);
                     s.log().add(new PrintStream(Files.newOutputStream(Paths.get(logFilePath)), true));
                 } else {
@@ -187,7 +193,7 @@ public class Flatzinc extends RegParser {
                             (ptime + System.currentTimeMillis()) / 1000f,
                             s.getReadingTimeCount(),
                             m.getEstimatedMemory()
-                            );
+                    );
                 }
             } catch (IOException e) {
                 throw new Error(e.getMessage());
@@ -299,6 +305,17 @@ public class Flatzinc extends RegParser {
             }
         });*/
         //solver.showShortStatistics();
+//        solver.showDecisions(() -> ""+solver.getNodeCount());
+//        solver.limitNode(2202);
+        if (Integer.getInteger("failLimit", -1) > 0) {
+            solver.limitFail(Integer.getInteger("failLimit"));
+        }
+        if (Integer.getInteger("solLimit", -1) > 0) {
+            solver.limitSolution(Integer.getInteger("solLimit"));
+        }
+        if (Integer.getInteger("nodLimit", -1) > 0) {
+            solver.limitNode(Integer.getInteger("nodLimit"));
+        }
         if (level.isLoggable(Level.INFO)) {
             solver.log().bold().printf("== %d flatzinc ==%n", datas[0].cstrCounter().values().stream().mapToInt(i -> i).sum());
             datas[0].cstrCounter().entrySet().stream()

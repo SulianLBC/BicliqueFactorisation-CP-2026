@@ -11,6 +11,7 @@ package org.chocosolver.sat;
 
 import gnu.trove.list.TIntList;
 import gnu.trove.list.array.TIntArrayList;
+import gnu.trove.map.hash.TIntIntHashMap;
 import gnu.trove.map.hash.TIntObjectHashMap;
 import gnu.trove.stack.TIntStack;
 import gnu.trove.stack.array.TIntArrayStack;
@@ -60,7 +61,7 @@ public class MiniSat implements SatFactory {
             return this.content[i];
         }
 
-        public void set(int i, E e){
+        public void set(int i, E e) {
             this.content[i] = e;
         }
 
@@ -71,13 +72,13 @@ public class MiniSat implements SatFactory {
             this.content[size = newSize] = null;
         }
 
-        public int size(){
+        public int size() {
             return this.size;
         }
 
         public void resize(int j) {
             if (size >= 32 && size >= j * 2) {
-                this.content = Arrays.copyOf(this.content, Math.max(16, j+1));
+                this.content = Arrays.copyOf(this.content, Math.max(16, j + 1));
             }
             this.size = j;
         }
@@ -154,6 +155,12 @@ public class MiniSat implements SatFactory {
     private long notKeep;
     private long keep;
 
+    // for extended resolution only
+    private final TIntObjectHashMap<List<Clause>> varDefiningClauses = new TIntObjectHashMap<>();
+    private final TIntIntHashMap varOccurrencesInNogoods = new TIntIntHashMap();
+    private final TIntArrayList post_factor_clause = new TIntArrayList();
+    private boolean learnPreFactorClause = false;
+
     /**
      * Create a new instance of MiniSat solver.
      */
@@ -220,7 +227,7 @@ public class MiniSat implements SatFactory {
         if (temporary_variables.size() > 0) {
             var = temporary_variables.pop();
         } else {
-            var = newVariable(new MiniSat.ChannelInfo(null, TMP_VAR_TYPE, -1, -1, false));
+            var = newVariable(new MiniSat.ChannelInfo(null, TMP_VAR_TYPE, -1, -1, Settings.PARAM_LEARNING_MODE.equals(Settings.LearningMode.EXTENDED_RESOLUTION)));
         }
         return MiniSat.makeLiteral(var, true);
     }
@@ -330,10 +337,46 @@ public class MiniSat implements SatFactory {
      * @param unforgettable if true, the clause will not be removed during {@link #doReduceDB()}
      */
     public void addLearnt(TIntList learnt_clause, boolean unforgettable) {
+        if (!post_factor_clause.isEmpty()) {
+            temporary_add_vector_.resetQuick();
+            temporary_add_vector_.addAll(post_factor_clause);
+            post_factor_clause.resetQuick();
+            assert !learnPreFactorClause : "expecting post factor clause, but found pre factor clause";
+            addLearnt(temporary_add_vector_, unforgettable);
+            learnPreFactorClause = true;
+        }
         if (learnt_clause.size() == 1) {
+            assert !learnPreFactorClause
+                    || cinfo.get(var(learnt_clause.get(0))).cons_type != TMP_VAR_TYPE
+                    || varDefiningClauses.containsKey(var(learnt_clause.get(0)))
+                    : "pre-factor clause of size 1 contains an undefined factor: " + learnt_clause.get(0);
+            int lit_p = learnt_clause.get(0);
+            if (Settings.PARAM_LEARNING_MODE.equals(Settings.LearningMode.EXTENDED_RESOLUTION)) {
+                int var_p = var(lit_p);
+                if (cinfo.get(var_p).cons_type == TMP_VAR_TYPE) {
+                    assert varDefiningClauses.containsKey(var_p);
+                    // add justifying clauses
+                    // work also for full extended resolution:
+                    // the factor is set to false, we only learn the defining clause
+                    // the other binary clauses are entailed (!lit_p is always true)
+                    Clause c = varDefiningClauses.get(var_p).get(0);
+                    // duplicate the clause but ignore the first lit.
+                    int[] lits = new int[c.size() - 1];
+                    for (int i = 1; i < c.size(); i++) {
+                        lits[i - 1] = c._g(i);
+                    }
+                    c = new ArrayClause(lits, true, false);
+                    attachClause(c);
+                    // recycle lit_p
+                    temporary_variables.push(var_p);
+                    assert !varOccurrencesInNogoods.contains(var_p) : var_p+ " is already declared in a nogood";
+                    varDefiningClauses.remove(var_p);
+                    return;
+                }
+            }
             uncheckedEnqueue(learnt_clause.get(0));
         } else {
-            Clause cr = new ArrayClause(learnt_clause, true);
+            Clause cr = new ArrayClause(learnt_clause, true, false);
             learnts.add(cr);
             if (unforgettable) { // in the case of a solution, for instance.
                 if (learnts.size() > 1) {
@@ -345,9 +388,35 @@ public class MiniSat implements SatFactory {
                 // increment the index
                 learnt_first_removable++;
             }
+//            assert isAssertingClause(this, cr) : "the reason " + showReason(cr) + " is not asserting under propagation";
+            boolean enqueue = true;
+            if (Settings.PARAM_LEARNING_MODE.equals(Settings.LearningMode.EXTENDED_RESOLUTION)) {
+                enqueue = !learnPreFactorClause || isAssertingClause(this, cr);
+                for (int i = 0; i < cr.size(); i++) {
+                    int var_p = var(cr._g(i));
+                    if (cinfo.get(var_p).cons_type == TMP_VAR_TYPE) {
+                        if (learnPreFactorClause && i == cr.size() - 1) {
+                            learnPreFactorClause = false;
+                        } else {
+                            assert varDefiningClauses.containsKey(var_p) : "lit " + var_p + " is not defined by any clause";
+                            // add justifying clauses
+                            if (!varOccurrencesInNogoods.contains(var_p)) {
+                                assert i == 0 : " only the UIP should a non-justified factor, " + var_p + " is not the UIP.";
+                                for (Clause c : varDefiningClauses.get(var_p)) {
+                                    attachClause(c);
+                                }
+                            }
+                        }
+                        varOccurrencesInNogoods.adjustOrPutValue(var_p, 1, 1);
+                    }
+                }
+                learnPreFactorClause = false;
+            }
             attachClause(cr);
             claBumpActivity(cr);
-            uncheckedEnqueue(learnt_clause.get(0), cr);
+            if (enqueue) {
+                uncheckedEnqueue(learnt_clause.get(0), cr);
+            }
         }
         claDecayActivity();
 
@@ -405,8 +474,14 @@ public class MiniSat implements SatFactory {
                         System.out.printf("Unfix %d\n", trail_.get(c));
                 }
                 if (cinfo.get(x).cons_type == TMP_VAR_TYPE) {
-                    // recycle
-                    temporary_variables.push(x);
+                    if (Settings.PARAM_LEARNING_MODE.equals(Settings.LearningMode.BICLIQUE_FACTORISATION)) {
+                        // recycle
+                        temporary_variables.push(x);
+                    } else if (Settings.PARAM_LEARNING_MODE.equals(Settings.LearningMode.EXTENDED_RESOLUTION)) {
+                        if (!varDefiningClauses.containsKey(x)) {
+                            temporary_variables.push(x);
+                        } // else do nothing
+                    }
                 }
             }
             qhead_ = trail_markers_.get(level);
@@ -510,7 +585,7 @@ public class MiniSat implements SatFactory {
     // Enqueue a literal. Assumes value of literal is undefined.
     public void uncheckedEnqueue(int l, Clause from) {
         assert valueLit(l) == lUndef : "l: " + printLit(l) + " from: " + from;
-        assert isAssertingClause(this, from.getConflict()) : "the reason " + showReason(from) + " is not valid because it is not unit";
+        assert isAssertingClause(this, from.getConflict()) : "the reason " + showReason(from) + " is not asserting under propagation";
         int v = var(l);
         if (assignment_.getQuick(v) == lUndef) {
             onLiteralPushed(l);
@@ -546,10 +621,15 @@ public class MiniSat implements SatFactory {
         uncheckedEnqueue(l, R_Undef);
     }
 
+    public static long totalArcs = 0;
+    public static long total1UIPFactors = 0;
+    public static long totalFactorsInNG = 0;
+
     public void cEnqueue(int l, Reason r) {
-        assert valueLit(l) != lTrue;
+        assert valueLit(l) != lTrue : l + " not true, reason is " + r;
         assert r != null : "reason is null for " + printLit(l);
-        assert isAssertingClause(this, r.getConflict()) : "the reason " + showReason(r) + " is not valid because it is not unit";
+        assert isAssertingClause(this, r.getConflict()) : "the reason " + showReason(r) + " is not asserting under propagation";
+        totalArcs += r.getConflict().size() - 1;
         int v = var(l);
         if (valueLit(l) == lFalse) {
             if (r == R_Undef) {
@@ -613,6 +693,29 @@ public class MiniSat implements SatFactory {
         }
         assert i > -1;
         ws.remove(i);
+        if (Settings.PARAM_LEARNING_MODE.equals(Settings.LearningMode.EXTENDED_RESOLUTION)
+                && !cr.isAttached()) {
+            for (i = 0; i < cr.size(); i++) {
+                int var_p = var(cr._g(i));
+                if (cinfo.get(var_p).cons_type == TMP_VAR_TYPE) {
+                    assert varDefiningClauses.containsKey(var_p) : "varDefiningClauses does not contain " + var_p;
+                    assert varOccurrencesInNogoods.containsKey(var_p);
+                    varOccurrencesInNogoods.adjustValue(var_p, -1);
+                    if (varOccurrencesInNogoods.get(var_p) == 0) {
+                        for (Clause c : varDefiningClauses.get(var_p)) {
+                            detachClause(c);
+                        }
+                        varDefiningClauses.remove(var_p);
+                        varOccurrencesInNogoods.remove(var_p);
+                        if (assignment_.get(var_p) == lUndef) {
+                            // recycle var_p
+                            temporary_variables.push(var_p);
+//                            System.out.println("Pushing on detachClause " + var_p);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // Perform unit propagation. returns true upon success.
@@ -747,9 +850,83 @@ public class MiniSat implements SatFactory {
             out_learnt.remove(j, out_learnt.size() - j);
         }
         tot_literals += out_learnt.size();
-
+        if (Settings.PARAM_LEARNING_MODE.equals(Settings.LearningMode.EXTENDED_RESOLUTION)) {
+            attachJustifyingClauses(out_learnt);
+            // if the UIP is an undefined factor
+            int uip = out_learnt.get(0);
+            if (cinfo.get(var(uip)).cons_type == TMP_VAR_TYPE && !varDefiningClauses.containsKey(var(out_learnt.get(0)))) {
+                int bcklevel = getBacktrackLevel(out_learnt);
+                // store the current clause
+                post_factor_clause.resetQuick();
+                post_factor_clause.addAll(out_learnt);
+                out_learnt.resetQuick();
+                // switch to biclique factorisation
+                Settings.PARAM_LEARNING_MODE = Settings.LearningMode.BICLIQUE_FACTORISATION;
+                analyze(getConfl(uip), out_learnt);
+                assert cinfo.get(var(out_learnt.get(0))).cons_type != TMP_VAR_TYPE
+                        || varDefiningClauses.containsKey(var(out_learnt.get(0)))
+                        : var(out_learnt.get(0)) + " shouldn't be an undefined factor in " + out_learnt;
+                // switch back to ER for future analysis
+                Settings.PARAM_LEARNING_MODE = Settings.LearningMode.EXTENDED_RESOLUTION;
+                // Find correct backtrack level:
+                int newBcklevel = getBacktrackLevel(out_learnt);
+                bcklevel = Math.max(bcklevel, newBcklevel);
+                if (post_factor_clause.size() > 1) {
+                    // then add the UIP as a factor
+                    out_learnt.add(neg(uip));
+                }
+                return bcklevel;
+            }
+        }
         // Find correct backtrack level:
         return getBacktrackLevel(out_learnt);
+    }
+
+    private void attachJustifyingClauses(TIntArrayList out_learnt) {
+        assert Settings.PARAM_LEARNING_MODE.equals(Settings.LearningMode.EXTENDED_RESOLUTION);
+        int i = 0;
+        int lit_p = out_learnt.get(i);
+        int var_p = var(lit_p);
+        if (cinfo.get(var_p).cons_type == TMP_VAR_TYPE
+                && !varDefiningClauses.containsKey(var_p)) {
+            total1UIPFactors++;
+            temporary_add_vector_.resetQuick();
+            temporary_add_vector_.add(neg(lit_p));
+            getJustifyingClause(lit_p, temporary_add_vector_);
+            List<Clause> myClauses = new ArrayList<>();
+            varDefiningClauses.put(var_p, myClauses);
+            myClauses.add(new ArrayClause(temporary_add_vector_, true, true));
+            // we can add other clauses here: iff, etc
+            int[] lits = new int[2];
+            lits[1] = lit_p;
+            for (int j = 1; j < temporary_add_vector_.size(); j++) {
+                lits[0] = neg(temporary_add_vector_.get(j));
+                if (lits[0] > 1) {
+                    myClauses.add(new ArrayClause(lits, true, true));
+                }
+            }
+        }
+        // assert that the other tmp lits are already justified
+        for (i = 0; i < out_learnt.size(); i++) {
+            lit_p = out_learnt.get(i);
+            var_p = var(lit_p);
+            if (cinfo.get(var_p).cons_type == TMP_VAR_TYPE) {
+                totalFactorsInNG++;
+            }
+            assert cinfo.get(var_p).cons_type != TMP_VAR_TYPE || varDefiningClauses.containsKey(var_p);
+        }
+    }
+
+    private void getJustifyingClause(int lit_p, TIntArrayList justifyingClause) {
+        Clause c = getConfl(lit_p); // the reason of p
+        for (int j = 1; j < c.size(); j++) {
+            int lit_q = c._g(j);
+            if (cinfo.get(var(lit_q)).cons_type == TMP_VAR_TYPE) {
+                getJustifyingClause(lit_q, justifyingClause);
+            } else {
+                justifyingClause.add(lit_q);
+            }
+        }
     }
 
     private void analyseConflict(Clause confl, TIntList out_learnt, int p) {
@@ -768,7 +945,7 @@ public class MiniSat implements SatFactory {
             vardata.get(var(p)).mark--;
             if (DEBUG > 1) System.out.printf("clear %d l:%d\n", var(p), p);
             // Ignore the type of the literal when the biclique factorisation is inactive
-            if (!Settings.PARAM_BICLIQUE_FACTORISATION
+            if (!Settings.PARAM_LEARNING_MODE.equals(Settings.LearningMode.BICLIQUE_FACTORISATION)
                     || cinfo.get(var(p)).cons_type != TMP_VAR_TYPE) {
                 pathC--;
             }
@@ -790,7 +967,7 @@ public class MiniSat implements SatFactory {
         if (c.learnt())
             claBumpActivity(c);
         // Check the type of the literal only if the biclique factorisation is active
-        if (Settings.PARAM_BICLIQUE_FACTORISATION
+        if (Settings.PARAM_LEARNING_MODE.equals(Settings.LearningMode.BICLIQUE_FACTORISATION)
                 && lit_p != litUndef && cinfo.get(var(lit_p)).cons_type == TMP_VAR_TYPE) {
             // if this is a factor, then it should have been already expanded
             return pathC;
@@ -813,8 +990,8 @@ public class MiniSat implements SatFactory {
             if (DEBUG > 1) System.out.printf("mark %d\n", var_p);
             vardata.get(var_p).mark = analysisRound;
             // Check the type of the literal only if the biclique factorisation is active
-            if (Settings.PARAM_BICLIQUE_FACTORISATION &&
-                    cinfo.get(var_p).cons_type == TMP_VAR_TYPE) {
+            if (Settings.PARAM_LEARNING_MODE.equals(Settings.LearningMode.BICLIQUE_FACTORISATION)
+                    && cinfo.get(var_p).cons_type == TMP_VAR_TYPE) {
                 // we recursively expand the factor to get the real reason
                 Clause c = getConfl(lit_p);
                 for (int j = (lit_p == litUndef) ? 0 : 1; j < c.size(); j++) {
@@ -853,7 +1030,9 @@ public class MiniSat implements SatFactory {
             if (cinfo.get(var(p)).reliable) {
                 continue;
             }
-            assert cinfo.get(var(p)).cons_type != TMP_VAR_TYPE : "no factor is allowed in a nogood";
+            if (!Settings.PARAM_LEARNING_MODE.equals(Settings.LearningMode.EXTENDED_RESOLUTION)) {
+                assert cinfo.get(var(p)).cons_type != TMP_VAR_TYPE : "no factor is allowed in a nogood";
+            }
             if (DEBUG > 0) {
                 System.out.printf("replacing %s in %s\n", p, out_learnt);
             }
@@ -904,6 +1083,9 @@ public class MiniSat implements SatFactory {
             int v = var(q); // The boolean variable associated with the literal
             //TODO: replace this test by a "reliable" test ?
             if (level(v) > rootlvl && cinfo.get(v).cons_type == TMP_VAR_TYPE) { // The literal is a factor so we check its reason instead
+                if (Settings.PARAM_LEARNING_MODE.equals(Settings.LearningMode.EXTENDED_RESOLUTION)) {
+                    throw new UnsupportedOperationException("Extended resolution is not supported yet");
+                }
                 assert cinfo.get(var(p)).cons_type != TMP_VAR_TYPE : "Two factors are not supposed to be linked by an arc";
                 if (vardata.get(v).mark < analysisRound) { // not marked
                     if (isIncludedIterativeVersion(q)) {
@@ -915,8 +1097,7 @@ public class MiniSat implements SatFactory {
                 } else if (vardata.get(v).mark == keep) {
                     return false;
                 }
-            } else
-                if (level(v) > rootlvl && vardata.get(v).mark < analysisRound) { // The literal is neither a factor nor from the initial propagation but is not present in the initial no-good
+            } else if (level(v) > rootlvl && vardata.get(v).mark < analysisRound) { // The literal is neither a factor nor from the initial propagation but is not present in the initial no-good
                 return false;
             }
         }
@@ -936,6 +1117,9 @@ public class MiniSat implements SatFactory {
                 int v_q = var(q); // The boolean variable associated with the literal
                 if (level(v_q) <= rootlvl) continue;
                 if (cinfo.get(v_q).cons_type == TMP_VAR_TYPE) { // The literal is a factor so we check its reason instead
+                    if (Settings.PARAM_LEARNING_MODE.equals(Settings.LearningMode.EXTENDED_RESOLUTION)) {
+                        throw new UnsupportedOperationException("Extended resolution is not supported yet");
+                    }
                     assert cinfo.get(var(p)).cons_type != TMP_VAR_TYPE : "Currently, two factors are not supposed to be linked by an arc";
                     if (vardata.get(v_q).mark < analysisRound) { // not marked
                         analyze_stack.add(q);
@@ -948,8 +1132,7 @@ public class MiniSat implements SatFactory {
                         }
                         return false;
                     }
-                } else
-                    if (vardata.get(v_q).mark < analysisRound) { // The literal is neither a factor nor from the initial propagation but is not present in the initial no-good
+                } else if (vardata.get(v_q).mark < analysisRound) { // The literal is neither a factor nor from the initial propagation but is not present in the initial no-good
                     int cur = v_p;
                     while (cur != var(p_start)) {
                         vardata.get(cur).mark = keep;
@@ -1160,8 +1343,6 @@ public class MiniSat implements SatFactory {
 
     public void doReduceDB() {
         int i, j;
-        double extra_lim = cla_inc / learnts.size();    // Remove any clause below this activity
-
         learnts.subList(learnt_first_removable, learnts.size())  // only removable clauses
                 .sort(comp);
         // Don't delete binary or locked clauses or unforgettable clauses.
@@ -1170,7 +1351,8 @@ public class MiniSat implements SatFactory {
         int deleted = (learnts.size() - learnt_first_removable) / 2;
         for (i = j = learnt_first_removable; i < learnts.size(); i++) {
             Clause c = learnts.get(i);
-            if (c.size() > 2 && !locked(c) && deleted >= 0) { //&& (c.activity < extra_lim)) {
+            // TODO remove attached clauses
+            if (c.size() > 2 && !locked(c) && deleted >= 0 && !c.isAttached()) { //&& (c.activity < extra_lim)) {
                 removeClause(learnts.get(i));
                 deleted--;
             } else {
@@ -1207,6 +1389,7 @@ public class MiniSat implements SatFactory {
     }
 
     void removeClause(Clause cr) {
+        // TODO remove attached clauses
         detachClause(cr);
         // Don't leave pointers to free'd memory!
         if (locked(cr)) {

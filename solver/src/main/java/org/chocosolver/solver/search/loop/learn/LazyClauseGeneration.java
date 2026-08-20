@@ -101,6 +101,11 @@ public class LazyClauseGeneration implements Learn {
 
     @Override
     public void forget() {
+        if(mSat.nLearnts() >= max_learnts || mSolver.getFailCount() > nextReductionCall){
+            mSat.doReduceDB();
+            nextReductionCall += Settings.PARAM_REDUCE_SAT_LEARNTS_CLAUSE_BASE +
+                    (long) Settings.PARAM_REDUCE_SAT_LEARNTS_CLAUSE_FACTOR * (++reductions);
+        }
         // required because MoveBinaryDFS add a useless decision level on refutation
         if (nbRestarts == mSolver.getRestartCount()) {
             mSolver.cancelTrail();
@@ -113,11 +118,6 @@ public class LazyClauseGeneration implements Learn {
             }
         } else {
             nbRestarts = mSolver.getRestartCount();
-        }
-        if(mSat.nLearnts() >= max_learnts || mSolver.getFailCount() > nextReductionCall){
-            mSat.doReduceDB();
-            nextReductionCall += Settings.PARAM_REDUCE_SAT_LEARNTS_CLAUSE_BASE +
-                    (long) Settings.PARAM_REDUCE_SAT_LEARNTS_CLAUSE_FACTOR * (++reductions);
         }
     }
 
@@ -139,7 +139,7 @@ public class LazyClauseGeneration implements Learn {
             extractFromVariables();
             //extractFromDecisions();
 
-            mSat.confl = new ArrayClause(learnt_clause, false /*?*/);
+            mSat.confl = new ArrayClause(learnt_clause, false /*?*/, false);
             int backtrack_level = analyze(mSolver.getContradictionException().set(Cause.Sat, null, null), ON_SOLUTION);
             onSolution = true; // to indicate that we are learning on a solution, for #forget()
             int upto = mSolver.getEnvironment().getWorldIndex() - backtrack_level;

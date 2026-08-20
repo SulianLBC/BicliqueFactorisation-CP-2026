@@ -11,6 +11,7 @@ package org.chocosolver.parser.xcsp;
 
 import org.chocosolver.parser.Level;
 import org.chocosolver.parser.RegParser;
+import org.chocosolver.sat.MiniSat;
 import org.chocosolver.solver.Model;
 import org.chocosolver.solver.ResolutionPolicy;
 import org.chocosolver.solver.Settings;
@@ -77,19 +78,26 @@ public class XCSP extends RegParser {
                 .setMaxDomSizeForEnumerated(6500)
                 .setNbMaxLearntClauses(20_000)
                 .setWarnUser(false);
-        Settings.PARAM_BICLIQUE_FACTORISATION_ALLDIFFERENT = Boolean.getBoolean("bcfa");
-        Settings.PARAM_BICLIQUE_FACTORISATION_CUMULATIVE = Boolean.getBoolean("bcfc");
-        Settings.PARAM_BICLIQUE_FACTORISATION = Settings.PARAM_BICLIQUE_FACTORISATION_ALLDIFFERENT || Settings.PARAM_BICLIQUE_FACTORISATION_CUMULATIVE;
+        Settings.PARAM_LEARNING_MODE = Settings.LearningMode.valueOf(System.getProperty("lm"));
+        Settings.PARAM_BICLIQUE_FACTORISATION_ALLDIFFERENT =
+                !Settings.PARAM_LEARNING_MODE.equals(Settings.LearningMode.NONE)
+                        && Boolean.getBoolean("bcfa");
+        Settings.PARAM_BICLIQUE_FACTORISATION_CUMULATIVE =
+                !Settings.PARAM_LEARNING_MODE.equals(Settings.LearningMode.NONE)
+                        && Boolean.getBoolean("bcfc");
         Settings.PARAM_CLAUSE_MINIMISATION = Integer.getInteger("ccmin", 0);
-        Settings.PARAM_REDUCE_SAT_LEARNTS_CLAUSE_BASE = Integer.getInteger("lcbase", 20000);;
+        Settings.PARAM_REDUCE_SAT_LEARNTS_CLAUSE_BASE = Integer.getInteger("lcbase", 20000);
         Settings.PARAM_REDUCE_SAT_LEARNTS_CLAUSE_FACTOR = Integer.getInteger("lcfactor", 5000);
+        MiniSat.totalArcs = 0;
+        MiniSat.total1UIPFactors = 0;
+        MiniSat.totalFactorsInNG = 0;
     }
 
     @Override
     public void createSolver() {
         super.createSolver();
         if (level.isLoggable(Level.COMPET)) {
-            System.out.printf("c Choco-solver%s (5.0.0, 260202_14:43)\n", lcg? " with LCG" : "");
+            System.out.printf("c Choco-solver%s (5.0.0, 260202_14:43)\n", lcg ? " with LCG" : "");
         }
         String iname = Paths.get(instance).getFileName().toString();
         parsers = new XCSPParser[nb_cores];
@@ -220,6 +228,15 @@ public class XCSP extends RegParser {
             getModel().displayVariableOccurrences();
             getModel().displayPropagatorOccurrences();
         }
+        if (Integer.getInteger("failLimit", -1) > 0) {
+            solver.limitFail(Integer.getInteger("failLimit"));
+        }
+        if (Integer.getInteger("solLimit", -1) > 0) {
+            solver.limitSolution(Integer.getInteger("solLimit"));
+        }
+        if (Integer.getInteger("nodLimit", -1) > 0) {
+            solver.limitNode(Integer.getInteger("nodLimit"));
+        }
         if (enumerate) {
             while (solver.solve()) {
                 onSolution(solver, parsers[0]);
@@ -331,7 +348,7 @@ public class XCSP extends RegParser {
         }
         if (level.is(Level.JSON)) {
             solver.log().printf(Locale.US, "\n\t],\n\t\"exit\":{\"time\":%.1f, " +
-                            "\"bound\":%d, \"nodes\":%d, \"failures\":%d, \"restarts\":%d, \"status\":\"%s\"}\n}",
+                            "\"bound\":%d, \"nodes\":%d, \"failures\":%d, \"restarts\":%d, \"tarcs\":%d, \"uipf\":%d, \"fNG\":%d, \"status\":\"%s\"}\n}",
                     solver.getTimeCount(),
                     solver.getObjectiveManager().isOptimization() ?
                             solver.getObjectiveManager().getBestSolutionValue().intValue() :
@@ -339,6 +356,9 @@ public class XCSP extends RegParser {
                     solver.getNodeCount(),
                     solver.getFailCount(),
                     solver.getRestartCount(),
+                    MiniSat.totalArcs,
+                    MiniSat.total1UIPFactors,
+                    MiniSat.totalFactorsInNG,
                     solver.getSearchState()
             );
         }

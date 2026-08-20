@@ -18,6 +18,7 @@ import org.chocosolver.parser.flatzinc.ast.expression.EArray;
 import org.chocosolver.parser.flatzinc.ast.expression.ESetBounds;
 import org.chocosolver.parser.flatzinc.ast.expression.ESetList;
 import org.chocosolver.parser.flatzinc.ast.expression.Expression;
+import org.chocosolver.sat.MiniSat;
 import org.chocosolver.solver.Model;
 import org.chocosolver.solver.ResolutionPolicy;
 import org.chocosolver.solver.Solution;
@@ -281,11 +282,17 @@ public class Datas {
         }
         if (level.is(Level.JSON)) {
             solver.log().printf(Locale.US, "\n\t],\n\t\"exit\":{\"time\":%.1f, " +
-                            "\"nodes\":%d, \"failures\":%d, \"restarts\":%d, \"status\":\"%s\"}\n}",
+                            "\"bound\":%d, \"nodes\":%d, \"failures\":%d, \"restarts\":%d, \"tarcs\":%d, \"uipf\":%d, \"fNG\":%d, \"status\":\"%s\"}\n}",
                     solver.getTimeCount(),
+                    solver.getObjectiveManager().isOptimization() ?
+                            solver.getObjectiveManager().getBestSolutionValue().intValue() :
+                            solver.getSolutionCount(),
                     solver.getNodeCount(),
                     solver.getFailCount(),
                     solver.getRestartCount(),
+                    MiniSat.totalArcs,
+                    MiniSat.total1UIPFactors,
+                    MiniSat.totalFactorsInNG,
                     solver.getSearchState()
             );
         }

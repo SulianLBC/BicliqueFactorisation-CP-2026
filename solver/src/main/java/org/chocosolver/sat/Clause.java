@@ -59,6 +59,10 @@ public abstract class Clause extends Reason {
         return false;
     }
 
+    public boolean isAttached() {
+        return false;
+    }
+
     @Override
     Clause getConflict() {
         return this;
