@@ -394,7 +394,7 @@ public class PropagatorCumulative extends Propagator<IntVar> {
         // Create the corresponding factor
         if (bicliqueFactorisation) {
             if (!factorExists(begin)) {
-                BitSet indexesTask = profile.fillList(j);
+                BitSet indexesTask = profile.fillList(j, activeTasks);
                 int factor = sat.newTemporaryVariable();
                 int[] r = new int[indexesTask.cardinality() * 4 + 1];
                 int m = 1;
@@ -409,7 +409,7 @@ public class PropagatorCumulative extends Propagator<IntVar> {
             }
             literals.add(MiniSat.neg(getFactor(begin)));
         } else {
-            BitSet indexesTask = profile.fillList(j);
+            BitSet indexesTask = profile.fillList(j, activeTasks);
             for (int i = indexesTask.nextSetBit(0); i >= 0; i = indexesTask.nextSetBit(i + 1)) {
                 literals.add(getNegGeqLit(tasks[i].getEnd(), end));
                 literals.add(getNegLeqLit(tasks[i].getStart(), begin));
